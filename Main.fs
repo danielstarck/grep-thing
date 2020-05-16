@@ -30,19 +30,23 @@ module GrepThing =
 
     let search (directory: string) (shouldSearchFile: string -> bool) (isTextMatch: string -> bool) : SearchResult =
         let toFileMatch (file: string) : FileMatch Option =
-            let textMatches: TextMatch List =
+            let textMatches, lineCount =
                 let lines = File.ReadAllLines file
 
                 lines
                 |> Array.zip (Enumerable.Range(1, lines.Length) |> Enumerable.ToArray)
                 |> Array.filter (fun (_, lineText) -> lineText |> isTextMatch)
-                |> Array.map (fun (lineNumber, lineText) -> { Line = lineNumber; Text = lineText })
-                |> Array.toList
+                |> Array.map (fun (lineNumber, lineText) -> { LineNumber = lineNumber; Text = lineText })
+                |> Array.toList,
+                lines.Length
 
             if textMatches.IsEmpty then
                 None
             else
-                Some { Filename = file; TextMatches = textMatches }
+                Some 
+                    { Filename = file
+                      Lines = lineCount
+                      TextMatches = textMatches }
 
         Directory.GetFiles directory
         |> Array.filter shouldSearchFile
@@ -50,36 +54,59 @@ module GrepThing =
         |> Array.toList
 
     let setSearchResultAndStatus (state: State) : State =
-        let getRegex (query: string) : Regex Option =
+        let getRegex (query: string) : Result<Regex, string> =
             try
-                query |> Regex |> Some
+                query |> Regex |> Ok
             with
-                | _ -> None
+                | _ -> Error <| sprintf @"""%A"" is not valid regex." query
 
-        let getShouldSearchFile =
-            state.FileQuery
-            |> getRegex
-            |> Option.map (fun regex -> (Path.GetFileName: string -> string) >> regex.IsMatch)
+        let assertIsAtleastTwoChars (textQuery: string) =
+            if textQuery.Length < 2 then
+                Error "Text query must be of length 2 or greater."
+            else
+                Ok textQuery
 
-        let getIsTextMatch =
-            state.TextQuery
-            |> getRegex
-            |> Option.map (fun regex -> regex.IsMatch)
+        let result =
+            ResultBuilder() {
+                let! directory =
+                    if Directory.Exists state.Directory then
+                        Ok state.Directory
+                    else
+                        Error "Directory does not exist."
 
-        let searchResult, status =
-            match 
-                Directory.Exists state.Directory,
-                getShouldSearchFile,
-                getIsTextMatch with
-                | false, _, _ -> [], "Directory does not exist"
-                | _, None, _ -> [], "File: Invalid regex"
-                | _, _, None -> [], "Text: Invalid regex"
-                | _, Some shouldSearchFile, Some isTextMatch ->
-                    search state.Directory shouldSearchFile isTextMatch, "OK"
+                let! shouldSearchFile =
+                    state.FileQuery
+                    |> getRegex
+                    |> Result.map (fun regex -> (Path.GetFileName: string -> string) >> regex.IsMatch)
 
-        { state with
-            SearchResult = searchResult
-            Status = status }
+                let! isTextMatch =
+                    state.TextQuery
+                    |> assertIsAtleastTwoChars
+                    |> Result.bind getRegex
+                    |> Result.map (fun regex -> regex.IsMatch)
+
+                return search directory shouldSearchFile isTextMatch
+            }
+
+        match result with
+        | Ok searchResult ->
+            let status =
+                let lineCount =
+                    searchResult
+                    |> List.sumBy (fun fileMatch -> fileMatch.TextMatches.Length)
+
+                sprintf
+                    "Found %A matching lines in %A files."
+                    lineCount
+                    searchResult.Length
+
+            { state with
+                SearchResult = searchResult
+                Status = status }
+        | Error error ->
+            { state with
+                SearchResult = []
+                Status = error }
 
     let update (msg: Msg) (state: State): State =
         match msg with
@@ -122,14 +149,14 @@ module GrepThing =
     let toGridRows (fileMatch: FileMatch): GridRow list =
         let headerRow =
             { File = fileMatch.Filename
-              Line = String.Empty
-              Text = String.Empty }
+              Line = "-"
+              Text = sprintf "%A matches in %A lines." fileMatch.TextMatches.Length fileMatch.Lines }
 
         let matchRows =
             fileMatch.TextMatches
             |> List.map (fun (textMatch: TextMatch) ->
-                { File = String.Empty
-                  Line = string textMatch.Line
+                { File = fileMatch.Filename
+                  Line = string textMatch.LineNumber
                   Text = textMatch.Text })
 
         headerRow :: matchRows
