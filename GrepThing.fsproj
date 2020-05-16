@@ -15,7 +15,7 @@
 
   <ItemGroup>
     <PackageReference Include="Avalonia.Controls.DataGrid" Version="0.9.10" />
-    <PackageReference Include="Avalonia.Desktop" Version="0.9.7" />
+    <PackageReference Include="Avalonia.Desktop" Version="0.9.9" />
     <PackageReference Include="JaggerJo.Avalonia.FuncUI" Version="0.4.0" />
     <PackageReference Include="JaggerJo.Avalonia.FuncUI.DSL" Version="0.4.0" />
     <PackageReference Include="JaggerJo.Avalonia.FuncUI.Elmish" Version="0.4.0" />
