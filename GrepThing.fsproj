@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Types.fs" />
     <Compile Include="DataGrid.fs" />
     <Compile Include="Main.fs" />
     <Compile Include="Program.fs" />
