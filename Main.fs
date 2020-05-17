@@ -30,15 +30,17 @@ module GrepThing =
 
     let search (directory: string) (shouldSearchFile: string -> bool) (isTextMatch: string -> bool) : SearchResult =
         let toFileMatch (file: string) : FileMatch Option =
-            let textMatches, lineCount =
-                let lines = File.ReadAllLines file
+            let textMatches, lineCount = 
+                Seq.fold
+                    (fun (matchingLines, linesRead) line ->
+                        let lineNumber = linesRead + 1
 
-                lines
-                |> Array.zip (Enumerable.Range(1, lines.Length) |> Enumerable.ToArray)
-                |> Array.filter (fun (_, lineText) -> lineText |> isTextMatch)
-                |> Array.map (fun (lineNumber, lineText) -> { LineNumber = lineNumber; Text = lineText })
-                |> Array.toList,
-                lines.Length
+                        if line |> isTextMatch then
+                            matchingLines @ [ { LineNumber = lineNumber; Text = line } ], lineNumber
+                        else
+                            matchingLines, lineNumber)
+                    ([], 0)
+                    (File.ReadLines file)
 
             if textMatches.IsEmpty then
                 None
