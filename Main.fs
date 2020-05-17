@@ -7,7 +7,6 @@ module GrepThing =
     open System
     open System.IO
     open System.Text.RegularExpressions
-    open System.Linq
 
     type State =
         { Directory: string
@@ -21,7 +20,7 @@ module GrepThing =
           FileQuery = String.Empty
           TextQuery = String.Empty
           Status = "OK"
-          SearchResult = [] }
+          SearchResult = { FileMatches = []; FilesSearched = 0 } }
 
     type Msg =
         | NewDirectory of string
@@ -50,10 +49,12 @@ module GrepThing =
                       Lines = lineCount
                       TextMatches = textMatches }
 
-        Directory.GetFiles directory
-        |> Array.filter shouldSearchFile
-        |> Array.choose toFileMatch
-        |> Array.toList
+        let filesToSearch = 
+            Directory.GetFiles directory
+            |> Array.filter shouldSearchFile
+        
+        { FileMatches = filesToSearch |> Array.choose toFileMatch |> Array.toList
+          FilesSearched = filesToSearch.Length }
 
     let setSearchResultAndStatus (state: State) : State =
         let getRegex (query: string) : Result<Regex, string> =
@@ -93,21 +94,22 @@ module GrepThing =
         match result with
         | Ok searchResult ->
             let status =
-                let lineCount =
-                    searchResult
+                let matchingLinesCount =
+                    searchResult.FileMatches
                     |> List.sumBy (fun fileMatch -> fileMatch.TextMatches.Length)
 
                 sprintf
-                    "Found %A matching lines in %A files."
-                    lineCount
-                    searchResult.Length
+                    "Found %A matching lines in %A files (of %A searched)."
+                    matchingLinesCount
+                    searchResult.FileMatches.Length
+                    searchResult.FilesSearched
 
             { state with
                 SearchResult = searchResult
                 Status = status }
         | Error error ->
             { state with
-                SearchResult = []
+                SearchResult = { FileMatches = []; FilesSearched = 0 }
                 Status = error }
 
     let update (msg: Msg) (state: State): State =
@@ -177,5 +179,5 @@ module GrepThing =
                               TextBlock.text state.Status ] ] ]
                   DataGrid.create
                       [ DataGrid.items
-                        <| List.collect toGridRows state.SearchResult
+                        <| List.collect toGridRows state.SearchResult.FileMatches
                         DataGrid.autoGenerateColumns true ] ] ]

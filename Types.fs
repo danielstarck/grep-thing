@@ -11,7 +11,9 @@ module Types =
           Lines: int
           TextMatches: TextMatch list }
 
-    type SearchResult = FileMatch list
+    type SearchResult = 
+        { FileMatches : FileMatch list
+          FilesSearched : int }
 
     type GridRow =
         { File: string
