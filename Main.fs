@@ -7,6 +7,7 @@ module GrepThing =
     open System
     open System.IO
     open System.Text.RegularExpressions
+    open Elmish
 
     type State =
         { Directory: string
@@ -15,48 +16,35 @@ module GrepThing =
           Status: string
           SearchResult: SearchResult }
 
-    let init =
+    let emptySearchResult = { FileMatches = []; FilesSearched = 0 }
+
+    let init () =
         { Directory = String.Empty
           FileQuery = String.Empty
           TextQuery = String.Empty
           Status = "OK"
-          SearchResult = { FileMatches = []; FilesSearched = 0 } }
+          SearchResult = emptySearchResult },
+        Cmd.none
 
     type Msg =
         | NewDirectory of string
         | NewFileQuery of string
         | NewTextQuery of string
+        | NewDirectorySearchParameters of DirectorySearchParameters
+        | FileSearched of FileMatch Option
+                
+    let status searchResult =
+        let matchingLinesCount =
+            searchResult.FileMatches
+            |> List.sumBy (fun fileMatch -> fileMatch.TextMatches.Length)
 
-    let search (directory: string) (shouldSearchFile: string -> bool) (isTextMatch: string -> bool) : SearchResult =
-        let toFileMatch (file: string) : FileMatch Option =
-            let textMatches, lineCount = 
-                Seq.fold
-                    (fun (matchingLines, linesRead) line ->
-                        let lineNumber = linesRead + 1
+        sprintf
+            "Found %A matching lines in %A files (of %A searched)."
+            matchingLinesCount
+            searchResult.FileMatches.Length
+            searchResult.FilesSearched
 
-                        if line |> isTextMatch then
-                            matchingLines @ [ { LineNumber = lineNumber; Text = line } ], lineNumber
-                        else
-                            matchingLines, lineNumber)
-                    ([], 0)
-                    (File.ReadLines file)
-
-            if textMatches.IsEmpty then
-                None
-            else
-                Some 
-                    { Filename = file
-                      Lines = lineCount
-                      TextMatches = textMatches }
-
-        let filesToSearch = 
-            Directory.GetFiles directory
-            |> Array.filter shouldSearchFile
-        
-        { FileMatches = filesToSearch |> Array.choose toFileMatch |> Array.toList
-          FilesSearched = filesToSearch.Length }
-
-    let setSearchResultAndStatus (state: State) : State =
+    let tryGetSearchParameters state =
         let getRegex (query: string) : Result<Regex, string> =
             try
                 query |> Regex |> Ok
@@ -88,38 +76,85 @@ module GrepThing =
                     |> Result.bind getRegex
                     |> Result.map (fun regex -> regex.IsMatch)
 
-                return search directory shouldSearchFile isTextMatch
+                return directory, shouldSearchFile, isTextMatch
             }
 
         match result with
-        | Ok searchResult ->
-            let status =
-                let matchingLinesCount =
-                    searchResult.FileMatches
-                    |> List.sumBy (fun fileMatch -> fileMatch.TextMatches.Length)
-
-                sprintf
-                    "Found %A matching lines in %A files (of %A searched)."
-                    matchingLinesCount
-                    searchResult.FileMatches.Length
-                    searchResult.FilesSearched
-
-            { state with
-                SearchResult = searchResult
-                Status = status }
+        | Ok (directory, shouldSearchFile, isTextMatch) ->
+            state,
+            Cmd.OfAsync.perform 
+                (fun (directory, shouldSearchFile) -> 
+                    async {
+                        return Directory.EnumerateFiles directory 
+                        |> Seq.filter shouldSearchFile
+                    })
+                (directory, shouldSearchFile)
+                (fun files -> 
+                    NewDirectorySearchParameters
+                        { Files = files
+                          IsTextMatch = isTextMatch })
         | Error error ->
             { state with
-                SearchResult = { FileMatches = []; FilesSearched = 0 }
-                Status = error }
+                SearchResult = emptySearchResult
+                Status = error },
+            Cmd.none
 
-    let update (msg: Msg) (state: State): State =
+    let searchFile (isTextMatch: string -> bool) (file: string) : FileMatch Option Async =
+        async {
+            let textMatches, lineCount = 
+                Seq.fold
+                    (fun (matchingLines, linesRead) line ->
+                        let lineNumber = linesRead + 1
+
+                        if line |> isTextMatch then
+                            matchingLines @ [ { LineNumber = lineNumber; Text = line } ], lineNumber
+                        else
+                            matchingLines, lineNumber)
+                    ([], 0)
+                    (File.ReadLines file)
+
+            return
+                if textMatches.IsEmpty then
+                    None
+                else
+                    Some 
+                        { Filename = file
+                          Lines = lineCount
+                          TextMatches = textMatches } }
+                      
+    let searchDirectory (parameters: DirectorySearchParameters) : Cmd<_> =
+        Seq.map
+            (fun file -> Cmd.OfAsync.perform (searchFile parameters.IsTextMatch) file FileSearched)
+            parameters.Files
+        |> Cmd.batch
+
+    let update (msg: Msg) (state: State) : State * Cmd<_> =
         match msg with
         | NewDirectory directory ->
-            { state with Directory = directory } |> setSearchResultAndStatus
+            { state with Directory = directory } |> tryGetSearchParameters
         | NewFileQuery fileQuery ->
-            { state with FileQuery = fileQuery } |> setSearchResultAndStatus
+            { state with FileQuery = fileQuery } |> tryGetSearchParameters
         | NewTextQuery textQuery ->
-            { state with TextQuery = textQuery } |> setSearchResultAndStatus
+            { state with TextQuery = textQuery } |> tryGetSearchParameters
+        | NewDirectorySearchParameters searchParameters ->
+            { state with
+                SearchResult = emptySearchResult
+                Status = status emptySearchResult },
+            searchDirectory searchParameters
+        | FileSearched fileMatchOption ->
+            match fileMatchOption with
+            | Some fileMatch ->
+                let searchResult =
+                    { FileMatches = state.SearchResult.FileMatches @ [ fileMatch ]
+                      FilesSearched = state.SearchResult.FilesSearched + 1 }
+                { state with 
+                    SearchResult = searchResult
+                    Status = status searchResult },
+                Cmd.none
+            | None -> 
+                let searchResult = { state.SearchResult with FilesSearched = state.SearchResult.FilesSearched + 1 }
+                { state with SearchResult = searchResult }, Cmd.none
+
 
     let labelledTextBox dispatch (label: string) (text: string) (msg: string -> Msg) =
         let fontSize = 18.0
@@ -178,6 +213,5 @@ module GrepThing =
                             [ TextBlock.fontSize 18.0
                               TextBlock.text state.Status ] ] ]
                   DataGrid.create
-                      [ DataGrid.items
-                        <| List.collect toGridRows state.SearchResult.FileMatches
+                      [ DataGrid.items <| List.collect toGridRows state.SearchResult.FileMatches
                         DataGrid.autoGenerateColumns true ] ] ]

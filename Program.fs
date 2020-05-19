@@ -18,8 +18,7 @@ type MainWindow() as this =
         //this.VisualRoot.VisualRoot.Renderer.DrawFps <- true
         //this.VisualRoot.VisualRoot.Renderer.DrawDirtyRects <- true
 
-
-        Elmish.Program.mkSimple (fun () -> GrepThing.init) GrepThing.update GrepThing.view
+        Elmish.Program.mkProgram GrepThing.init GrepThing.update GrepThing.view
         |> Program.withHost this
         |> Program.run
 

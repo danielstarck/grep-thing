@@ -4,7 +4,9 @@ open System
 
 [<AutoOpen>]
 module Types =
-    type TextMatch = { LineNumber: int; Text: string }
+    type TextMatch = 
+        { LineNumber: int
+          Text: string }
 
     type FileMatch =
         { Filename: string
@@ -19,6 +21,10 @@ module Types =
         { File: string
           Line: string
           Text: string }
+
+    type DirectorySearchParameters =
+        { Files: string seq
+          IsTextMatch: string -> bool }
 
     let ofOption error =
         function
