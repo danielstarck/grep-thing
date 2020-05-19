@@ -27,11 +27,14 @@ module GrepThing =
         Cmd.none
 
     type Msg =
-        | NewDirectory of string
-        | NewFileQuery of string
-        | NewTextQuery of string
+        | NewSearchQuery of SearchQueryUpdate
         | NewDirectorySearchParameters of DirectorySearchParameters
         | FileSearched of FileMatch Option
+
+    and SearchQueryUpdate =
+        | Directory of string
+        | FileQuery of string
+        | TextQuery of string
                 
     let status searchResult =
         let matchingLinesCount =
@@ -44,7 +47,21 @@ module GrepThing =
             searchResult.FileMatches.Length
             searchResult.FilesSearched
 
-    let tryGetSearchParameters state =
+    let cmdGetFiles (queryInput: QueryInput) =
+        Cmd.OfAsync.perform
+            (fun (directory, shouldSearchFile) ->
+                async {
+                    return directory 
+                    |> Directory.EnumerateFiles 
+                    |> Seq.filter shouldSearchFile
+                })
+            (queryInput.Directory, queryInput.ShouldSearchFile)
+            (fun files -> 
+                NewDirectorySearchParameters
+                    { Files = files
+                      IsTextMatch = queryInput.IsTextMatch })
+
+    let validateQueryInput directory fileQuery textQuery =
         let getRegex (query: string) : Result<Regex, string> =
             try
                 query |> Regex |> Ok
@@ -57,51 +74,33 @@ module GrepThing =
             else
                 Ok textQuery
 
-        let result =
-            ResultBuilder() {
-                let! directory =
-                    if Directory.Exists state.Directory then
-                        Ok state.Directory
-                    else
-                        Error "Directory does not exist."
+        ResultBuilder() {
+            let! directory =
+                if Directory.Exists directory then
+                    Ok directory
+                else
+                    Error "Directory does not exist."
 
-                let! shouldSearchFile =
-                    state.FileQuery
-                    |> getRegex
-                    |> Result.map (fun regex -> (Path.GetFileName: string -> string) >> regex.IsMatch)
+            let! shouldSearchFile =
+                fileQuery
+                |> getRegex
+                |> Result.map (fun regex -> (Path.GetFileName: string -> string) >> regex.IsMatch)
 
-                let! isTextMatch =
-                    state.TextQuery
-                    |> assertIsAtleastTwoChars
-                    |> Result.bind getRegex
-                    |> Result.map (fun regex -> regex.IsMatch)
+            let! isTextMatch =
+                textQuery
+                |> assertIsAtleastTwoChars
+                |> Result.bind getRegex
+                |> Result.map (fun regex -> regex.IsMatch)
 
-                return directory, shouldSearchFile, isTextMatch
-            }
-
-        match result with
-        | Ok (directory, shouldSearchFile, isTextMatch) ->
-            state,
-            Cmd.OfAsync.perform 
-                (fun (directory, shouldSearchFile) -> 
-                    async {
-                        return Directory.EnumerateFiles directory 
-                        |> Seq.filter shouldSearchFile
-                    })
-                (directory, shouldSearchFile)
-                (fun files -> 
-                    NewDirectorySearchParameters
-                        { Files = files
-                          IsTextMatch = isTextMatch })
-        | Error error ->
-            { state with
-                SearchResult = emptySearchResult
-                Status = error },
-            Cmd.none
+            return
+                { Directory = directory
+                  ShouldSearchFile = shouldSearchFile
+                  IsTextMatch = isTextMatch }
+        }
 
     let searchFile (isTextMatch: string -> bool) (file: string) : FileMatch Option Async =
         async {
-            let textMatches, lineCount = 
+            let textMatches, lineCount =
                 Seq.fold
                     (fun (matchingLines, linesRead) line ->
                         let lineNumber = linesRead + 1
@@ -130,12 +129,27 @@ module GrepThing =
 
     let update (msg: Msg) (state: State) : State * Cmd<_> =
         match msg with
-        | NewDirectory directory ->
-            { state with Directory = directory } |> tryGetSearchParameters
-        | NewFileQuery fileQuery ->
-            { state with FileQuery = fileQuery } |> tryGetSearchParameters
-        | NewTextQuery textQuery ->
-            { state with TextQuery = textQuery } |> tryGetSearchParameters
+        | NewSearchQuery searchQueryUpdate ->
+            let directory, fileQuery, textQuery =
+                match searchQueryUpdate with
+                | Directory directory -> directory, state.FileQuery, state.TextQuery
+                | FileQuery fileQuery -> state.Directory, fileQuery, state.TextQuery
+                | TextQuery textQuery -> state.Directory, state.FileQuery, textQuery
+
+            let cmd, status =
+                match validateQueryInput directory fileQuery textQuery with
+                | Ok queryInput ->
+                    cmdGetFiles queryInput, status state.SearchResult
+                | Error error ->
+                    Cmd.none, error
+
+            { state with
+                Directory = directory
+                FileQuery = fileQuery
+                TextQuery = textQuery
+                Status = status
+                SearchResult = emptySearchResult },
+            cmd
         | NewDirectorySearchParameters searchParameters ->
             { state with
                 SearchResult = emptySearchResult
@@ -147,18 +161,17 @@ module GrepThing =
                 let searchResult =
                     { FileMatches = state.SearchResult.FileMatches @ [ fileMatch ]
                       FilesSearched = state.SearchResult.FilesSearched + 1 }
-                { state with 
+                { state with
                     SearchResult = searchResult
                     Status = status searchResult },
                 Cmd.none
-            | None -> 
+            | None ->
                 let searchResult = { state.SearchResult with FilesSearched = state.SearchResult.FilesSearched + 1 }
                 { state with SearchResult = searchResult }, Cmd.none
 
+    let fontSize = 18.0
 
     let labelledTextBox dispatch (label: string) (text: string) (msg: string -> Msg) =
-        let fontSize = 18.0
-
         DockPanel.create
             [ DockPanel.dock Dock.Top
               DockPanel.height 40.0
@@ -174,16 +187,17 @@ module GrepThing =
                         [ TextBox.fontSize fontSize
                           TextBox.text text
                           TextBox.onTextChanged (msg >> dispatch)
-                          TextBox.verticalAlignment VerticalAlignment.Center ] ] ] :> Avalonia.FuncUI.Types.IView
+                          TextBox.verticalAlignment VerticalAlignment.Center ] ] ]
+        :> Avalonia.FuncUI.Types.IView
 
     let queryInputControls state dispatch =
         StackPanel.create
             [ StackPanel.dock Dock.Top
               StackPanel.children
               <| List.map (fun (label, text, msg) -> labelledTextBox dispatch label text msg)
-                     [ "Directory", state.Directory, NewDirectory
-                       "File", state.FileQuery, NewFileQuery
-                       "Text", state.TextQuery, NewTextQuery ] ]
+                     [ "Directory", state.Directory, Directory >> NewSearchQuery
+                       "File", state.FileQuery, FileQuery >> NewSearchQuery
+                       "Text", state.TextQuery, TextQuery >> NewSearchQuery ] ]
 
     let toGridRows (fileMatch: FileMatch): GridRow list =
         let headerRow =
@@ -207,10 +221,10 @@ module GrepThing =
                   DockPanel.create
                     [ DockPanel.dock Dock.Top
                       DockPanel.height 40.0
-                      DockPanel.verticalAlignment VerticalAlignment.Center  
+                      DockPanel.verticalAlignment VerticalAlignment.Center
                       DockPanel.children
                         [ TextBlock.create
-                            [ TextBlock.fontSize 18.0
+                            [ TextBlock.fontSize fontSize
                               TextBlock.text state.Status ] ] ]
                   DataGrid.create
                       [ DataGrid.items <| List.collect toGridRows state.SearchResult.FileMatches

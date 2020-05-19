@@ -26,6 +26,11 @@ module Types =
         { Files: string seq
           IsTextMatch: string -> bool }
 
+    type QueryInput =
+        { Directory: string
+          ShouldSearchFile: string -> bool
+          IsTextMatch: string -> bool }
+
     let ofOption error =
         function
         | Some s -> Ok s
